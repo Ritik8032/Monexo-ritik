@@ -1688,14 +1688,29 @@ app.post('/xxapi/monitorflow/check', async (req, res) => {
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
 
   const { ct_type, account, ct_id } = req.body;
-  const upis = user.zoopayUpis || [];
+  const typeNum = isNaN(Number(ct_type)) ? 16 : Number(ct_type);
+
+  let tool = null;
+  if (user.collectionTools) {
+    if (ct_id) {
+      tool = user.collectionTools.find(t => t.id === ct_id);
+    }
+    if (!tool && account) {
+      tool = user.collectionTools.find(t => t.account === account && t.type === typeNum);
+    }
+  }
+
+  const state = tool ? (tool.state !== undefined ? tool.state : 7) : 7;
+  const upis = tool ? (tool.backup_upi || []) : (user.zoopayUpis || []);
+
+  console.log(`[Zoopay Check] User: ${user.phone}, Account: ${account}, CtID: ${ct_id}, Tool found: ${!!tool}, State: ${state}, UPI Count: ${upis.length}`);
 
   return res.json({
     code: 0,
     msg: 'success',
     data: {
-      state: 2, // constants.ct_state_idle
-      id: ct_id,
+      state, // return actual state (7 for waiting_authupi, 2 for idle/ready)
+      id: tool ? tool.id : (ct_id || ''),
       backup_upi: upis
     }
   });
@@ -1705,12 +1720,28 @@ app.post('/xxapi/monitorflow/upi/list', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
   
-  const upis = user.zoopayUpis || [];
+  const { ct_type, account, ct_id } = req.body;
+  const typeNum = isNaN(Number(ct_type)) ? 16 : Number(ct_type);
+
+  let tool = null;
+  if (user.collectionTools) {
+    if (ct_id) {
+      tool = user.collectionTools.find(t => t.id === ct_id);
+    }
+    if (!tool && account) {
+      tool = user.collectionTools.find(t => t.account === account && t.type === typeNum);
+    }
+  }
+
+  const upis = tool ? (tool.backup_upi || []) : (user.zoopayUpis || []);
+
+  console.log(`[Zoopay UPI List] User: ${user.phone}, Account: ${account}, CtID: ${ct_id}, Tool found: ${!!tool}, UPI Count: ${upis.length}`);
+
   return res.json({
     code: 0,
     msg: 'success',
     data: {
-      id: req.body.ct_id,
+      id: tool ? tool.id : (ct_id || ''),
       backup_upi: upis
     }
   });
