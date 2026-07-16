@@ -1269,44 +1269,78 @@ app.get('/xxapi/addAgentGroup/:id', async (req, res) => {
 });
 
 // 9. COLLECTION TOOL ENDPOINTS
-app.get('/xxapi/collectiontoollist', async (req, res) => {
-  const user = await getUserByToken(req);
-  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+async function healAndGetCleanTools(user) {
   if (!user.collectionTools) {
     user.collectionTools = [];
   }
-  // Dynamically filter out any legacy hardcoded mock/fake collection tools from old DB states
-  // Also filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
+  
+  let modified = false;
   const cleanTools = (user.collectionTools || []).filter(
     t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
   ).map(t => {
     const typeVal = t.type !== undefined ? t.type : 16;
+    let upiVal = t.upi;
+    
+    // Find first available verified UPI ID from backup_upi or user.zoopayUpis
+    let verifiedUpi = '';
+    if (t.backup_upi && t.backup_upi.length > 0) {
+      verifiedUpi = t.backup_upi[0];
+    } else if (user.zoopayUpis && user.zoopayUpis.length > 0) {
+      verifiedUpi = user.zoopayUpis[0];
+    }
+    
+    // If upi is empty or "Pending verification", auto-heal it with the verified UPI ID
+    if ((!upiVal || upiVal === 'Pending verification' || upiVal === 'Pending') && verifiedUpi) {
+      upiVal = verifiedUpi;
+      t.upi = verifiedUpi;
+      modified = true;
+    }
+    
+    // Auto-heal other fields if missing
+    if (t.status === undefined) {
+      t.status = 1; // available
+      modified = true;
+    }
+    if (t.ctType === undefined || t.ct_type === undefined) {
+      t.ctType = typeVal;
+      t.ct_type = typeVal;
+      modified = true;
+    }
+    
     return {
       ...t,
+      status: t.status !== undefined ? t.status : 1,
+      state: t.state !== undefined ? t.state : 2,
+      upi: upiVal,
       ctType: t.ctType !== undefined ? t.ctType : typeVal,
       ct_type: t.ct_type !== undefined ? t.ct_type : typeVal
     };
   });
+  
+  if (modified) {
+    user.markModified('collectionTools');
+    try {
+      await user.save();
+      console.log(`[Collection Tool Healing] Saved auto-healed tool fields for user: ${user.phone}`);
+    } catch (err) {
+      console.error(`[Collection Tool Healing] Error saving user:`, err);
+    }
+  }
+  
+  return cleanTools;
+}
+
+app.get('/xxapi/collectiontoollist', async (req, res) => {
+  const user = await getUserByToken(req);
+  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+  const cleanTools = await healAndGetCleanTools(user);
   return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
 
 app.get('/xxapi/collectiontool', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
-  if (!user.collectionTools) {
-    user.collectionTools = [];
-  }
-  // Filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
-  const cleanTools = (user.collectionTools || []).filter(
-    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
-  ).map(t => {
-    const typeVal = t.type !== undefined ? t.type : 16;
-    return {
-      ...t,
-      ctType: t.ctType !== undefined ? t.ctType : typeVal,
-      ct_type: t.ct_type !== undefined ? t.ct_type : typeVal
-    };
-  });
+  const cleanTools = await healAndGetCleanTools(user);
   return res.json({ code: 0, msg: 'success', data: cleanTools[0] || null });
 });
 
@@ -1475,20 +1509,7 @@ app.post('/xxapi/collectiontool/stopsell', async (req, res) => {
 app.get('/xxapi/availablect', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 0, msg: 'success', data: [] });
-  if (!user.collectionTools) {
-    user.collectionTools = [];
-  }
-  // Filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
-  const cleanTools = (user.collectionTools || []).filter(
-    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
-  ).map(t => {
-    const typeVal = t.type !== undefined ? t.type : 16;
-    return {
-      ...t,
-      ctType: t.ctType !== undefined ? t.ctType : typeVal,
-      ct_type: t.ct_type !== undefined ? t.ct_type : typeVal
-    };
-  });
+  const cleanTools = await healAndGetCleanTools(user);
   return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
 
@@ -1696,6 +1717,9 @@ app.post('/xxapi/monitorflow/three', async (req, res) => {
       if (tool) {
         tool.state = 2; // set to idle/ready to enable selection checking in check
         tool.backup_upi = upis;
+        if (upis && upis.length > 0) {
+          tool.upi = upis[0];
+        }
       }
       user.markModified('collectionTools');
     }
@@ -1741,13 +1765,16 @@ app.post('/xxapi/monitorflow/check', async (req, res) => {
     if (upis.length === 0) {
       upis = user.zoopayUpis;
     }
-    if (tool && (tool.state === 7 || !tool.backup_upi || tool.backup_upi.length === 0)) {
+    if (tool && (tool.state === 7 || !tool.backup_upi || tool.backup_upi.length === 0 || !tool.upi || tool.upi === 'Pending verification')) {
       tool.state = 2;
       tool.backup_upi = upis;
+      if (upis && upis.length > 0) {
+        tool.upi = upis[0];
+      }
       state = 2;
       user.markModified('collectionTools');
       await user.save();
-      console.log(`[Zoopay Check] Auto-healed tool ${tool.id} to state 2, backup_upi populated.`);
+      console.log(`[Zoopay Check] Auto-healed tool ${tool.id} to state 2, backup_upi and upi populated.`);
     }
   }
 
