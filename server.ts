@@ -203,7 +203,12 @@ function mapCtTypeToName(ct_type) {
   }
 }
 
-async function getOrRegisterZoopayUser(user) {
+async function getOrRegisterZoopayUser(user, forceRefresh = false) {
+  if (user.zoopayToken && !forceRefresh) {
+    console.log(`[Zoopay] Reusing stored token for ${user.phone}: ${user.zoopayToken}`);
+    return user.zoopayToken;
+  }
+
   if (user.zoopayPhone && user.zoopayPassword) {
     try {
       console.log(`[Zoopay] Stored credentials found for ${user.phone}: ${user.zoopayPhone}. Attempting login...`);
@@ -227,6 +232,19 @@ async function getOrRegisterZoopayUser(user) {
         return user.zoopayToken;
       } else {
         console.warn(`[Zoopay] Login failed with stored credentials:`, loginJson);
+        // If the credentials are old/invalid or user not found, we can clear them to allow re-registration
+        if (loginJson && (loginJson.code === 400 || loginJson.code === 401 || loginJson.code === 404 || (loginJson.message && loginJson.message.toLowerCase().includes('not found')))) {
+          console.log(`[Zoopay] Credentials appear invalid, clearing to trigger re-registration.`);
+          user.zoopayPhone = undefined;
+          user.zoopayPassword = undefined;
+          user.zoopayUsername = undefined;
+          user.zoopayToken = undefined;
+          user.markModified('zoopayPhone');
+          user.markModified('zoopayPassword');
+          user.markModified('zoopayUsername');
+          user.markModified('zoopayToken');
+          await user.save();
+        }
       }
     } catch (err) {
       console.error('[Zoopay] Login error with stored credentials:', err);
@@ -293,6 +311,43 @@ async function getOrRegisterZoopayUser(user) {
     }
   }
   throw new Error('Failed to register or login with Zoopay API after 3 attempts');
+}
+
+async function fetchZoopay(user, url, options: any = {}) {
+  let token = await getOrRegisterZoopayUser(user);
+  
+  if (!options.headers) options.headers = {};
+  options.headers['Authorization'] = `Bearer ${token}`;
+  options.headers['Accept'] = 'application/json';
+  if (!options.headers['Content-Type'] && options.body) {
+    options.headers['Content-Type'] = 'application/json';
+  }
+
+  let res = await fetch(url, options);
+  
+  let isUnauthorized = (res.status === 401 || res.status === 403);
+  let json: any = null;
+  
+  if (!isUnauthorized) {
+    try {
+      const clone = res.clone();
+      json = await clone.json();
+      if (json && (json.code === 401 || json.code === 403 || (json.message && json.message.toLowerCase().includes('unauthorized')))) {
+        isUnauthorized = true;
+      }
+    } catch (e) {
+      // Not JSON
+    }
+  }
+
+  if (isUnauthorized) {
+    console.log(`[Zoopay Fetch] Unauthorized error detected. Fetching a fresh token and retrying...`);
+    token = await getOrRegisterZoopayUser(user, true); // force refresh
+    options.headers['Authorization'] = `Bearer ${token}`;
+    res = await fetch(url, options);
+  }
+
+  return res;
 }
 
 async function seedAdminUser() {
@@ -1254,8 +1309,8 @@ app.post('/xxapi/collectiontool', async (req, res) => {
     return res.json({ code: 404, msg: 'Collection tool not found' });
   }
 
-  try {
-    const zoopayToken = user.zoopayToken || await getOrRegisterZoopayUser(user);
+    try {
+    const zoopayToken = await getOrRegisterZoopayUser(user);
     const sessionId = user.zoopaySessionId;
 
     if (!sessionId) {
@@ -1263,13 +1318,8 @@ app.post('/xxapi/collectiontool', async (req, res) => {
     }
 
     console.log(`[Zoopay] Linking UPI ID: sessionId=${sessionId}, upi_id=${upi}`);
-    const linkRes = await fetch('https://api.zoopay.vip/api/collection/tool/link', {
+    const linkRes = await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tool/link', {
       method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${zoopayToken}`
-      },
       body: JSON.stringify({
         sessionId,
         upi_id: upi
@@ -1288,13 +1338,8 @@ app.post('/xxapi/collectiontool', async (req, res) => {
     const zoopayToolId = linkJson.data.id;
 
     console.log(`[Zoopay] Activating tool (updateState): id=${zoopayToolId}`);
-    const stateRes = await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+    const stateRes = await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/updateState', {
       method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${zoopayToken}`
-      },
       body: JSON.stringify({
         id: zoopayToolId,
         state: 'enabled'
@@ -1332,17 +1377,12 @@ app.post('/xxapi/collectiontoolStatus', async (req, res) => {
     if (state !== undefined) tool.state = Number(state);
     
     // If we have a Zoopay ID, push state update to Zoopay too
-    if (tool.zoopayToolId && user.zoopayToken) {
+    if (tool.zoopayToolId) {
       try {
         const zoopayState = (Number(inSell) === 1 || Number(state) === 2) ? 'enabled' : 'disabled';
         console.log(`[Zoopay] Syncing manual state update: id=${tool.zoopayToolId}, state=${zoopayState}`);
-        await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+        await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/updateState', {
           method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${user.zoopayToken}`
-          },
           body: JSON.stringify({
             id: tool.zoopayToolId,
             state: zoopayState
@@ -1368,15 +1408,10 @@ app.post('/xxapi/collectiontool/startsell', async (req, res) => {
     tool.inSell = 1;
     tool.state = 2; // idle / active
     
-    if (tool.zoopayToolId && user.zoopayToken) {
+    if (tool.zoopayToolId) {
       try {
-        await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+        await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/updateState', {
           method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${user.zoopayToken}`
-          },
           body: JSON.stringify({
             id: tool.zoopayToolId,
             state: 'enabled'
@@ -1402,15 +1437,10 @@ app.post('/xxapi/collectiontool/stopsell', async (req, res) => {
     tool.inSell = 0;
     tool.state = 0; // disabled
     
-    if (tool.zoopayToolId && user.zoopayToken) {
+    if (tool.zoopayToolId) {
       try {
-        await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+        await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/updateState', {
           method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${user.zoopayToken}`
-          },
           body: JSON.stringify({
             id: tool.zoopayToolId,
             state: 'disabled'
@@ -1458,13 +1488,8 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
 
     // 2. Call sendWalletOtp on Zoopay API
     console.log(`[Zoopay] Sending Wallet OTP: account=${account}, upiType=${upiType}`);
-    const otpRes = await fetch('https://api.zoopay.vip/api/collection/tools/sendWalletOtp', {
+    const otpRes = await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/sendWalletOtp', {
       method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${zoopayToken}`
-      },
       body: JSON.stringify({
         upi_account: account,
         upi_type: upiType
@@ -1585,7 +1610,6 @@ app.post('/xxapi/monitorflow/three', async (req, res) => {
   }
 
   try {
-    const zoopayToken = user.zoopayToken || await getOrRegisterZoopayUser(user);
     const sessionId = user.zoopaySessionId;
 
     if (!sessionId) {
@@ -1593,13 +1617,8 @@ app.post('/xxapi/monitorflow/three', async (req, res) => {
     }
 
     console.log(`[Zoopay] Verifying OTP: sessionId=${sessionId}, otp=${otp}`);
-    const verifyRes = await fetch('https://api.zoopay.vip/api/collection/tools/verifyWalletOtp', {
+    const verifyRes = await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/verifyWalletOtp', {
       method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${zoopayToken}`
-      },
       body: JSON.stringify({
         sessionId,
         otp
@@ -2253,18 +2272,13 @@ setInterval(async () => {
   try {
     const users = await User.find({ 'collectionTools.zoopayToolId': { $exists: true } });
     for (const user of users) {
-      if (!user.collectionTools || !user.zoopayToken) continue;
+      if (!user.collectionTools) continue;
       for (const tool of user.collectionTools) {
         if (tool && tool.zoopayToolId) {
           try {
             console.log(`[Zoopay KeepAlive] Updating state for tool ${tool.zoopayToolId} of user ${user.phone}`);
-            await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+            await fetchZoopay(user, 'https://api.zoopay.vip/api/collection/tools/updateState', {
               method: 'POST',
-              headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${user.zoopayToken}`
-              },
               body: JSON.stringify({
                 id: tool.zoopayToolId,
                 state: 'enabled'
