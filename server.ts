@@ -1580,7 +1580,8 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
 });
 
 app.post('/xxapi/monitorflow/two', (req, res) => {
-  res.json({ code: 0, msg: 'success', data: {} });
+  const { pk } = req.body;
+  res.json({ code: 0, msg: 'success', data: pk || {} });
 });
 
 app.post('/xxapi/monitorflow/two/getpreloginresult', (req, res) => {
@@ -1659,7 +1660,11 @@ app.post('/xxapi/monitorflow/three', async (req, res) => {
 
     // Update tool state to ready
     if (user.collectionTools) {
-      const tool = user.collectionTools.find(t => t.id === pk);
+      let tool = user.collectionTools.find(t => t.id === pk);
+      if (!tool && account) {
+        const typeNum = isNaN(Number(ct_type)) ? 16 : Number(ct_type);
+        tool = user.collectionTools.find(t => t.account === account && t.type === typeNum);
+      }
       if (tool) {
         tool.state = 2; // set to idle/ready to enable selection checking in check
         tool.backup_upi = upis;
@@ -1700,8 +1705,23 @@ app.post('/xxapi/monitorflow/check', async (req, res) => {
     }
   }
 
-  const state = tool ? (tool.state !== undefined ? tool.state : 7) : 7;
-  const upis = tool ? (tool.backup_upi || []) : (user.zoopayUpis || []);
+  let state = tool ? (tool.state !== undefined ? tool.state : 7) : 7;
+  let upis = tool ? (tool.backup_upi || []) : (user.zoopayUpis || []);
+
+  // Auto-healing / auto-recovery: If we have verified UPIs in user.zoopayUpis, but tool's state is still 7 or backup_upi is empty, auto-recover it to 2 (ready) and save it.
+  if (user.zoopayUpis && user.zoopayUpis.length > 0) {
+    if (upis.length === 0) {
+      upis = user.zoopayUpis;
+    }
+    if (tool && (tool.state === 7 || !tool.backup_upi || tool.backup_upi.length === 0)) {
+      tool.state = 2;
+      tool.backup_upi = upis;
+      state = 2;
+      user.markModified('collectionTools');
+      await user.save();
+      console.log(`[Zoopay Check] Auto-healed tool ${tool.id} to state 2, backup_upi populated.`);
+    }
+  }
 
   console.log(`[Zoopay Check] User: ${user.phone}, Account: ${account}, CtID: ${ct_id}, Tool found: ${!!tool}, State: ${state}, UPI Count: ${upis.length}`);
 
@@ -1733,7 +1753,9 @@ app.post('/xxapi/monitorflow/upi/list', async (req, res) => {
     }
   }
 
-  const upis = tool ? (tool.backup_upi || []) : (user.zoopayUpis || []);
+  const upis = tool && tool.backup_upi && tool.backup_upi.length > 0
+    ? tool.backup_upi
+    : (user.zoopayUpis && user.zoopayUpis.length > 0 ? user.zoopayUpis : []);
 
   console.log(`[Zoopay UPI List] User: ${user.phone}, Account: ${account}, CtID: ${ct_id}, Tool found: ${!!tool}, UPI Count: ${upis.length}`);
 
