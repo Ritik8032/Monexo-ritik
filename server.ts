@@ -139,7 +139,21 @@ function generateMd5Password(phone) {
   return crypto.createHash('md5').update(phone + 'secret_salt_123').digest('hex');
 }
 
-function mapCtTypeToUpiType(typeNum) {
+function mapCtTypeToUpiType(ct_type) {
+  if (!ct_type) return "paytm";
+  const typeStr = String(ct_type).trim().toLowerCase();
+  if (typeStr.includes("paytm")) return "paytm";
+  if (typeStr.includes("phonepe")) return "phonepe";
+  if (typeStr.includes("mobikwik")) return "mobikwik";
+  if (typeStr.includes("freecharge")) return "freecharge";
+  if (typeStr.includes("bharatpe")) return "bharatpe";
+  if (typeStr.includes("airtel")) return "airtel";
+  if (typeStr.includes("slice")) return "slice";
+  if (typeStr.includes("iob")) return "iob";
+  if (typeStr.includes("amazon")) return "amazon";
+  if (typeStr.includes("jio")) return "jiof";
+
+  const typeNum = Number(ct_type);
   switch (typeNum) {
     case 1: return "phonepe";
     case 2: return "mobikwik";
@@ -157,7 +171,21 @@ function mapCtTypeToUpiType(typeNum) {
   }
 }
 
-function mapCtTypeToName(typeNum) {
+function mapCtTypeToName(ct_type) {
+  if (!ct_type) return "UPI Partner";
+  const typeStr = String(ct_type).trim().toLowerCase();
+  if (typeStr.includes("paytm")) return typeStr.includes("business") ? "PayTM Business" : "PayTM";
+  if (typeStr.includes("phonepe")) return typeStr.includes("business") ? "PhonePe Business" : "PhonePe";
+  if (typeStr.includes("mobikwik")) return "MobiKwik";
+  if (typeStr.includes("freecharge")) return "Freecharge";
+  if (typeStr.includes("bharatpe")) return "BharatPe";
+  if (typeStr.includes("airtel")) return "Airtel Pay";
+  if (typeStr.includes("slice")) return "Slice Pay";
+  if (typeStr.includes("iob")) return "IOB";
+  if (typeStr.includes("amazon")) return "Amazon Pay";
+  if (typeStr.includes("jio")) return "Jio Money";
+
+  const typeNum = Number(ct_type);
   switch (typeNum) {
     case 1: return "PhonePe";
     case 2: return "MobiKwik";
@@ -1420,9 +1448,9 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
     user.collectionTools = [];
   }
 
-  const typeNum = Number(ct_type || 16);
-  const upiType = mapCtTypeToUpiType(typeNum);
-  const partnerName = mapCtTypeToName(typeNum);
+  const upiType = mapCtTypeToUpiType(ct_type);
+  const partnerName = mapCtTypeToName(ct_type);
+  const typeNum = isNaN(Number(ct_type)) ? 16 : Number(ct_type);
 
   try {
     // 1. Get or Register on Zoopay and obtain JWT token
@@ -1442,13 +1470,31 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
         upi_type: upiType
       })
     });
+
+    if (!otpRes.ok) {
+      let errMsg = `Zoopay API error (status ${otpRes.status})`;
+      try {
+        const errJson = await otpRes.json();
+        errMsg = errJson.message || errJson.msg || errMsg;
+      } catch (e) {
+        try {
+          const txt = await otpRes.text();
+          if (txt) errMsg = txt;
+        } catch (_) {}
+      }
+      return res.json({
+        code: otpRes.status || 500,
+        msg: errMsg
+      });
+    }
+
     const otpJson = await otpRes.json();
     console.log(`[Zoopay] sendWalletOtp response:`, JSON.stringify(otpJson));
 
     if (!otpJson || otpJson.code !== 200) {
       return res.json({ 
-        code: otpJson ? otpJson.code : 500, 
-        msg: otpJson ? (otpJson.message || 'Zoopay OTP Sending Failed') : 'Zoopay API error' 
+        code: otpJson ? (otpJson.code || 500) : 500, 
+        msg: otpJson ? (otpJson.message || otpJson.msg || 'Zoopay OTP Sending Failed') : 'Zoopay API error' 
       });
     }
 
@@ -1559,13 +1605,30 @@ app.post('/xxapi/monitorflow/three', async (req, res) => {
         otp
       })
     });
+    if (!verifyRes.ok) {
+      let errMsg = `Zoopay API error (status ${verifyRes.status})`;
+      try {
+        const errJson = await verifyRes.json();
+        errMsg = errJson.message || errJson.msg || errMsg;
+      } catch (e) {
+        try {
+          const txt = await verifyRes.text();
+          if (txt) errMsg = txt;
+        } catch (_) {}
+      }
+      return res.json({
+        code: verifyRes.status || 400,
+        msg: errMsg
+      });
+    }
+
     const verifyJson = await verifyRes.json();
     console.log(`[Zoopay] verifyWalletOtp response:`, JSON.stringify(verifyJson));
 
     if (!verifyJson || verifyJson.code !== 200) {
       return res.json({ 
-        code: verifyJson ? verifyJson.code : 400, 
-        msg: verifyJson ? (verifyJson.message || 'Incorrect OTP, please try again') : 'Incorrect OTP, please try again'
+        code: verifyJson ? (verifyJson.code || 400) : 400, 
+        msg: verifyJson ? (verifyJson.message || verifyJson.msg || 'Incorrect OTP, please try again') : 'Incorrect OTP, please try again'
       });
     }
 
