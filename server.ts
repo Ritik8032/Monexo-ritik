@@ -1276,8 +1276,9 @@ app.get('/xxapi/collectiontoollist', async (req, res) => {
     user.collectionTools = [];
   }
   // Dynamically filter out any legacy hardcoded mock/fake collection tools from old DB states
+  // Also filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
   const cleanTools = (user.collectionTools || []).filter(
-    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon')
+    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
   );
   return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
@@ -1288,8 +1289,9 @@ app.get('/xxapi/collectiontool', async (req, res) => {
   if (!user.collectionTools) {
     user.collectionTools = [];
   }
+  // Filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
   const cleanTools = (user.collectionTools || []).filter(
-    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon')
+    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
   );
   return res.json({ code: 0, msg: 'success', data: cleanTools[0] || null });
 });
@@ -1462,8 +1464,9 @@ app.get('/xxapi/availablect', async (req, res) => {
   if (!user.collectionTools) {
     user.collectionTools = [];
   }
+  // Filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
   const cleanTools = (user.collectionTools || []).filter(
-    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon')
+    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
   );
   return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
