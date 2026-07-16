@@ -1569,7 +1569,8 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
       data: {
         needRelink: false,
         ctId: tool.id,
-        ct_id: tool.id
+        ct_id: tool.id,
+        pk: tool.id
       }
     });
   } catch (err) {
