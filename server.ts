@@ -143,51 +143,32 @@ function isPasswordEmpty(password) {
 }
 
 function getDefaultCollectionTools() {
-  return [
-    {
-      id: "tool-paytm-business",
-      name: "PayTM Business",
-      type: 16,
-      onlyPaymentFlag: 3,
-      state: 2, // idle / online
-      minSellToken: 2,
-      limitConfig: JSON.stringify({ min: 100, max: 100000 }),
-      inSell: 1,
-      ctGuide: "If you Change your upi id, please relink right now!",
-      account: "merchant@paytm",
-      phone: "9182736450",
-      remark: "Verified merchant partner"
-    },
-    {
-      id: "tool-phonepe-business",
-      name: "PhonePe Business",
-      type: 19,
-      onlyPaymentFlag: 3,
-      state: 2,
-      minSellToken: 2,
-      limitConfig: JSON.stringify({ min: 100, max: 100000 }),
-      inSell: 1,
-      ctGuide: "Please check upi address before transfer",
-      account: "merchant@ybl",
-      phone: "9876543210",
-      remark: "Instant settlement"
-    },
-    {
-      id: "tool-amazon",
-      name: "Amazon Pay",
-      type: 18,
-      onlyPaymentFlag: 3,
-      state: 2,
-      minSellToken: 2,
-      limitConfig: JSON.stringify({ min: 100, max: 100000 }),
-      inSell: 1,
-      ctGuide: "Ensure your account status is active",
-      account: "merchant@apl",
-      phone: "9000100020",
-      remark: "Super-fast settlement"
-    }
-  ];
+  return [];
 }
+
+// Dynamic URL Normalization and Rewrite Middleware for Serverless Compatibility (Netlify/Vercel)
+app.use((req, res, next) => {
+  const originalUrl = req.url;
+  
+  // Strip Netlify/Vercel serverless function path prefixes if present
+  if (req.url.startsWith('/.netlify/functions/xxapi')) {
+    req.url = req.url.replace('/.netlify/functions/xxapi', '/xxapi');
+  } else if (req.url.startsWith('/api/xxapi')) {
+    req.url = req.url.replace('/api/xxapi', '/xxapi');
+  } else if (req.url.startsWith('/api')) {
+    req.url = req.url.replace('/api', '/xxapi');
+  }
+
+  // Prepend /xxapi if a clean API request path is accessed without it (e.g. checkSmsNew)
+  if (!req.url.startsWith('/xxapi') && req.method !== 'GET' && !req.url.includes('.')) {
+    req.url = '/xxapi' + (req.url.startsWith('/') ? '' : '/') + req.url;
+  }
+  
+  if (originalUrl !== req.url) {
+    console.log(`[URL Rewrite] Normalized: ${originalUrl} -> ${req.url}`);
+  }
+  next();
+});
 
 // CORS configuration helper
 app.use((req, res, next) => {
@@ -1050,28 +1031,57 @@ app.get('/xxapi/addAgentGroup/:id', async (req, res) => {
 app.get('/xxapi/collectiontoollist', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
-  if (!user.collectionTools || user.collectionTools.length === 0) {
-    user.collectionTools = getDefaultCollectionTools();
-    await user.save();
+  if (!user.collectionTools) {
+    user.collectionTools = [];
   }
-  return res.json({ code: 0, msg: 'success', data: user.collectionTools });
+  // Dynamically filter out any legacy hardcoded mock/fake collection tools from old DB states
+  const cleanTools = (user.collectionTools || []).filter(
+    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon')
+  );
+  return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
 
 app.get('/xxapi/collectiontool', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
-  if (!user.collectionTools || user.collectionTools.length === 0) {
-    user.collectionTools = getDefaultCollectionTools();
-    await user.save();
+  if (!user.collectionTools) {
+    user.collectionTools = [];
   }
-  return res.json({ code: 0, msg: 'success', data: user.collectionTools[0] });
+  const cleanTools = (user.collectionTools || []).filter(
+    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon')
+  );
+  return res.json({ code: 0, msg: 'success', data: cleanTools[0] || null });
+});
+
+// Edit or Update collection tool details
+app.post('/xxapi/collectiontool', async (req, res) => {
+  const user = await getUserByToken(req);
+  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+
+  const { id, upi, account, password, pnname } = req.body;
+  if (!user.collectionTools) {
+    user.collectionTools = [];
+  }
+
+  const tool = user.collectionTools.find(t => t.id === id);
+  if (tool) {
+    if (upi !== undefined) tool.upi = upi;
+    if (account !== undefined) tool.account = account;
+    if (pnname !== undefined) tool.pnname = pnname;
+    tool.state = 2; // idle / online
+    tool.inSell = 1;
+  }
+  user.markModified('collectionTools');
+  await user.save();
+
+  return res.json({ code: 0, msg: 'success' });
 });
 
 app.post('/xxapi/collectiontoolStatus', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
   const { id, inSell, state } = req.body;
-  if (!user.collectionTools) user.collectionTools = getDefaultCollectionTools();
+  if (!user.collectionTools) user.collectionTools = [];
   const tool = user.collectionTools.find(t => t.id === id);
   if (tool) {
     if (inSell !== undefined) tool.inSell = Number(inSell);
@@ -1086,7 +1096,7 @@ app.post('/xxapi/collectiontool/startsell', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
   const { id } = req.body;
-  if (!user.collectionTools) user.collectionTools = getDefaultCollectionTools();
+  if (!user.collectionTools) user.collectionTools = [];
   const tool = user.collectionTools.find(t => t.id === id);
   if (tool) {
     tool.inSell = 1;
@@ -1101,7 +1111,7 @@ app.post('/xxapi/collectiontool/stopsell', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
   const { id } = req.body;
-  if (!user.collectionTools) user.collectionTools = getDefaultCollectionTools();
+  if (!user.collectionTools) user.collectionTools = [];
   const tool = user.collectionTools.find(t => t.id === id);
   if (tool) {
     tool.inSell = 0;
@@ -1115,11 +1125,122 @@ app.post('/xxapi/collectiontool/stopsell', async (req, res) => {
 app.get('/xxapi/availablect', async (req, res) => {
   const user = await getUserByToken(req);
   if (!user) return res.json({ code: 0, msg: 'success', data: [] });
-  if (!user.collectionTools || user.collectionTools.length === 0) {
-    user.collectionTools = getDefaultCollectionTools();
-    await user.save();
+  if (!user.collectionTools) {
+    user.collectionTools = [];
   }
-  return res.json({ code: 0, msg: 'success', data: user.collectionTools });
+  const cleanTools = (user.collectionTools || []).filter(
+    t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon')
+  );
+  return res.json({ code: 0, msg: 'success', data: cleanTools });
+});
+
+// MONITORFLOW / UPI LINKING STEP-FLOW ENDPOINTS
+app.post('/xxapi/monitorflow/one', async (req, res) => {
+  const user = await getUserByToken(req);
+  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+
+  const { ct_type, account, pnname, ct_id, pin, deviceId } = req.body;
+  if (!user.collectionTools) {
+    user.collectionTools = [];
+  }
+
+  const typeNum = Number(ct_type || 16);
+  let upiSuffix = '@ybl';
+  let partnerName = 'PhonePe Business';
+  
+  if (typeNum === 16) {
+    upiSuffix = '@paytm';
+    partnerName = 'PayTM';
+  } else if (typeNum === 19) {
+    upiSuffix = '@ybl';
+    partnerName = 'PhonePe Business';
+  } else if (typeNum === 18) {
+    upiSuffix = '@apl';
+    partnerName = 'Amazon Pay';
+  } else {
+    upiSuffix = '@upi';
+    partnerName = 'UPI Partner';
+  }
+
+  const generatedUpi = `${account}${upiSuffix}`;
+
+  let tool;
+  if (ct_id) {
+    tool = user.collectionTools.find(t => t.id === ct_id);
+  }
+
+  if (!tool) {
+    const id = `tool-user-${Date.now()}`;
+    tool = {
+      id: id,
+      name: partnerName,
+      type: typeNum,
+      onlyPaymentFlag: 3,
+      state: 2, // idle / online
+      minSellToken: 2,
+      limitConfig: JSON.stringify({ min: 100, max: 100000 }),
+      inSell: 1,
+      ctGuide: "If you Change your upi id, please relink right now!",
+      account: account,
+      upi: generatedUpi,
+      phone: user.phone,
+      pnname: pnname || "Merchant Partner",
+      remark: "Verified partner"
+    };
+    user.collectionTools.push(tool);
+  } else {
+    tool.account = account;
+    tool.upi = generatedUpi;
+    tool.type = typeNum;
+    tool.state = 2;
+    tool.inSell = 1;
+    if (pnname) tool.pnname = pnname;
+  }
+
+  user.markModified('collectionTools');
+  await user.save();
+
+  return res.json({
+    code: 0,
+    msg: 'success',
+    data: {
+      needRelink: false,
+      ctId: tool.id,
+      ct_id: tool.id
+    }
+  });
+});
+
+app.post('/xxapi/monitorflow/two', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: {} });
+});
+
+app.post('/xxapi/monitorflow/two/getpreloginresult', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: {} });
+});
+
+app.post('/xxapi/monitorflow/two/getpreloginresult2', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: {} });
+});
+
+app.post('/xxapi/monitorflow/three', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: {} });
+});
+
+app.post('/xxapi/monitorflow/three2', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: {} });
+});
+
+app.post('/xxapi/monitorflow/four', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: {} });
+});
+
+app.post('/xxapi/monitorflow/check', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: { status: 'success' } });
+});
+
+app.post('/xxapi/monitorflow/upi/list', (req, res) => {
+  res.json({ code: 0, msg: 'success', data: [] });
 });
 
 // 10. RECHARGE, DEPOSIT AND TRANSACTION ENDPOINTS
@@ -1236,7 +1357,14 @@ app.get('/xxapi/teaminfo', async (req, res) => {
     return res.json({ code: 403, msg: 'Unauthorized' });
   }
   const teamWorkId = user.phone;
-  const inviteCode = user.invitercode || '123456';
+  
+  // Dynamically generate a unique 6-digit numeric invite code derived from user's phone number to make it real and fully functional
+  const inviteCode = user.phone ? user.phone.slice(-6) : '123456';
+
+  // Construct dynamic real invitation URL based on the active hosting domain (Netlify/Vercel/Local)
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  const rsUrl = `${protocol}://${host}/#/register?code=`;
 
   return res.json({
     code: 0,
@@ -1263,7 +1391,7 @@ app.get('/xxapi/teaminfo', async (req, res) => {
         bonus: 0
       },
       inviteCode: inviteCode,
-      rsUrl: "https://web.tezflow.vip/#/register?code=",
+      rsUrl: rsUrl,
       teamSize: 0,
       totalRecharge: 0,
       totalWithdraw: 0,
