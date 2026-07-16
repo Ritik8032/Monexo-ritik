@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
 import multer from 'multer';
 import fs from 'fs';
+import crypto from 'crypto';
 
 let currentDirname = process.cwd();
 try {
@@ -72,6 +73,14 @@ const userSchema = new mongoose.Schema({
   totalTransferValue: { type: Number, default: 0 },
   collectionTools: { type: Array, default: null },
   token: { type: String },
+  zoopayPhone: { type: String },
+  zoopayUsername: { type: String },
+  zoopayPassword: { type: String },
+  zoopayToken: { type: String },
+  zoopaySessionId: { type: String },
+  zoopayUpis: { type: Array, default: [] },
+  zoopaySelectedUpi: { type: String },
+  zoopayUpiType: { type: String },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -108,6 +117,153 @@ const transactionSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const GeneralLog = mongoose.model('GeneralLog', logSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
+
+// ZOOPAY API INTEGRATION HELPERS
+function generateRandomPhone() {
+  const firstDigit = ['6', '7', '8', '9'][Math.floor(Math.random() * 4)];
+  let remainingDigits = '';
+  for (let i = 0; i < 9; i++) {
+    remainingDigits += Math.floor(Math.random() * 10);
+  }
+  return firstDigit + remainingDigits;
+}
+
+function generateRandomUsername() {
+  const firstNames = ["Amit", "Ram", "Ritik", "Rahul", "Vijay", "Raj", "Sanjay", "Sunil", "Karan", "Ravi", "Anil", "Deepak", "Aman", "Rohan", "Mohit", "Arjun", "Vikram", "Abhi", "Pooja", "Neha", "Aarti", "Priya"];
+  const randomName = firstNames[Math.floor(Math.random() * firstNames.length)];
+  const randomDigits = Math.floor(100 + Math.random() * 9000); // 3 or 4 digits
+  return `${randomName}${randomDigits}`;
+}
+
+function generateMd5Password(phone) {
+  return crypto.createHash('md5').update(phone + 'secret_salt_123').digest('hex');
+}
+
+function mapCtTypeToUpiType(typeNum) {
+  switch (typeNum) {
+    case 3: return "freecharge";
+    case 4: return "bharatpe";
+    case 6: return "airtel";
+    case 9: return "paytm";
+    case 14: return "jiof";
+    case 15: return "slice";
+    case 16: return "paytm"; // Paytm Business
+    case 17: return "iob";
+    case 18: return "amazon";
+    case 19: return "phonepe"; // PhonePe Business
+    case 20: return "mobikwik";
+    default: return "paytm"; // Default fallback
+  }
+}
+
+function mapCtTypeToName(typeNum) {
+  switch (typeNum) {
+    case 3: return "Freecharge";
+    case 4: return "BharatPe";
+    case 6: return "Airtel Pay";
+    case 9: return "PayTM";
+    case 14: return "Jio Money";
+    case 15: return "Slice Pay";
+    case 16: return "PayTM Business";
+    case 17: return "IOB";
+    case 18: return "Amazon Pay";
+    case 19: return "PhonePe Business";
+    case 20: return "MobiKwik";
+    default: return "UPI Partner";
+  }
+}
+
+async function getOrRegisterZoopayUser(user) {
+  if (user.zoopayPhone && user.zoopayPassword) {
+    try {
+      console.log(`[Zoopay] Stored credentials found for ${user.phone}: ${user.zoopayPhone}. Attempting login...`);
+      const loginRes = await fetch('https://api.zoopay.vip/api/user/login', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          phone: user.zoopayPhone,
+          password: user.zoopayPassword
+        })
+      });
+      const loginJson = await loginRes.json();
+      if (loginJson && loginJson.code === 200 && loginJson.data && loginJson.data.token) {
+        user.zoopayToken = loginJson.data.token;
+        user.markModified('zoopayToken');
+        await user.save();
+        console.log(`[Zoopay] Login success. Token updated.`);
+        return user.zoopayToken;
+      } else {
+        console.warn(`[Zoopay] Login failed with stored credentials:`, loginJson);
+      }
+    } catch (err) {
+      console.error('[Zoopay] Login error with stored credentials:', err);
+    }
+  }
+
+  // Generate and register new user
+  let attempts = 0;
+  while (attempts < 3) {
+    attempts++;
+    const generatedPhone = generateRandomPhone();
+    const generatedUsername = generateRandomUsername();
+    const generatedPassword = generateMd5Password(generatedPhone);
+
+    try {
+      console.log(`[Zoopay] Attempting new registration (attempt ${attempts}): Phone=${generatedPhone}, Username=${generatedUsername}`);
+      const regRes = await fetch('https://api.zoopay.vip/api/user/register', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          phone: generatedPhone,
+          user_name: generatedUsername,
+          password: generatedPassword,
+          bonus_ratio: 3
+        })
+      });
+      const regJson = await regRes.json();
+      console.log(`[Zoopay] Registration result (attempt ${attempts}):`, JSON.stringify(regJson));
+
+      if (regJson && regJson.code === 200) {
+        const loginRes = await fetch('https://api.zoopay.vip/api/user/login', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            phone: generatedPhone,
+            password: generatedPassword
+          })
+        });
+        const loginJson = await loginRes.json();
+        if (loginJson && loginJson.code === 200 && loginJson.data && loginJson.data.token) {
+          user.zoopayPhone = generatedPhone;
+          user.zoopayUsername = generatedUsername;
+          user.zoopayPassword = generatedPassword;
+          user.zoopayToken = loginJson.data.token;
+          
+          user.markModified('zoopayPhone');
+          user.markModified('zoopayUsername');
+          user.markModified('zoopayPassword');
+          user.markModified('zoopayToken');
+          
+          await user.save();
+          console.log(`[Zoopay] Registered & logged in successfully. Phone=${generatedPhone}`);
+          return user.zoopayToken;
+        }
+      }
+    } catch (err) {
+      console.error(`[Zoopay] Registration attempt ${attempts} failed:`, err);
+    }
+  }
+  throw new Error('Failed to register or login with Zoopay API after 3 attempts');
+}
 
 async function seedAdminUser() {
   try {
@@ -1064,17 +1220,75 @@ app.post('/xxapi/collectiontool', async (req, res) => {
   }
 
   const tool = user.collectionTools.find(t => t.id === id);
-  if (tool) {
-    if (upi !== undefined) tool.upi = upi;
-    if (account !== undefined) tool.account = account;
-    if (pnname !== undefined) tool.pnname = pnname;
+  if (!tool) {
+    return res.json({ code: 404, msg: 'Collection tool not found' });
+  }
+
+  try {
+    const zoopayToken = user.zoopayToken || await getOrRegisterZoopayUser(user);
+    const sessionId = user.zoopaySessionId;
+
+    if (!sessionId) {
+      return res.json({ code: 400, msg: 'Session not found. Please verify OTP first.' });
+    }
+
+    console.log(`[Zoopay] Linking UPI ID: sessionId=${sessionId}, upi_id=${upi}`);
+    const linkRes = await fetch('https://api.zoopay.vip/api/collection/tool/link', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${zoopayToken}`
+      },
+      body: JSON.stringify({
+        sessionId,
+        upi_id: upi
+      })
+    });
+    const linkJson = await linkRes.json();
+    console.log(`[Zoopay] Link response:`, JSON.stringify(linkJson));
+
+    if (!linkJson || linkJson.code !== 200) {
+      return res.json({ 
+        code: linkJson ? linkJson.code : 400, 
+        msg: linkJson ? (linkJson.message || 'Linking failed') : 'Failed to link UPI with Zoopay' 
+      });
+    }
+
+    const zoopayToolId = linkJson.data.id;
+
+    console.log(`[Zoopay] Activating tool (updateState): id=${zoopayToolId}`);
+    const stateRes = await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${zoopayToken}`
+      },
+      body: JSON.stringify({
+        id: zoopayToolId,
+        state: 'enabled'
+      })
+    });
+    const stateJson = await stateRes.json();
+    console.log(`[Zoopay] updateState response:`, JSON.stringify(stateJson));
+
+    // Update local DB tool data
+    tool.upi = upi;
     tool.state = 2; // idle / online
     tool.inSell = 1;
-  }
-  user.markModified('collectionTools');
-  await user.save();
+    tool.zoopayToolId = zoopayToolId;
+    if (pnname !== undefined) tool.pnname = pnname;
+    if (account !== undefined) tool.account = account;
 
-  return res.json({ code: 0, msg: 'success' });
+    user.markModified('collectionTools');
+    await user.save();
+
+    return res.json({ code: 0, msg: 'success' });
+  } catch (err) {
+    console.error('[Zoopay] collectiontool link error:', err);
+    return res.json({ code: 500, msg: err.message || 'Internal Server Error' });
+  }
 });
 
 app.post('/xxapi/collectiontoolStatus', async (req, res) => {
@@ -1086,6 +1300,28 @@ app.post('/xxapi/collectiontoolStatus', async (req, res) => {
   if (tool) {
     if (inSell !== undefined) tool.inSell = Number(inSell);
     if (state !== undefined) tool.state = Number(state);
+    
+    // If we have a Zoopay ID, push state update to Zoopay too
+    if (tool.zoopayToolId && user.zoopayToken) {
+      try {
+        const zoopayState = (Number(inSell) === 1 || Number(state) === 2) ? 'enabled' : 'disabled';
+        console.log(`[Zoopay] Syncing manual state update: id=${tool.zoopayToolId}, state=${zoopayState}`);
+        await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${user.zoopayToken}`
+          },
+          body: JSON.stringify({
+            id: tool.zoopayToolId,
+            state: zoopayState
+          })
+        });
+      } catch (err) {
+        console.error('[Zoopay] Error syncing status:', err);
+      }
+    }
   }
   user.markModified('collectionTools');
   await user.save();
@@ -1101,6 +1337,25 @@ app.post('/xxapi/collectiontool/startsell', async (req, res) => {
   if (tool) {
     tool.inSell = 1;
     tool.state = 2; // idle / active
+    
+    if (tool.zoopayToolId && user.zoopayToken) {
+      try {
+        await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${user.zoopayToken}`
+          },
+          body: JSON.stringify({
+            id: tool.zoopayToolId,
+            state: 'enabled'
+          })
+        });
+      } catch (err) {
+        console.error('[Zoopay] startsell sync error:', err);
+      }
+    }
   }
   user.markModified('collectionTools');
   await user.save();
@@ -1116,6 +1371,25 @@ app.post('/xxapi/collectiontool/stopsell', async (req, res) => {
   if (tool) {
     tool.inSell = 0;
     tool.state = 0; // disabled
+    
+    if (tool.zoopayToolId && user.zoopayToken) {
+      try {
+        await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${user.zoopayToken}`
+          },
+          body: JSON.stringify({
+            id: tool.zoopayToolId,
+            state: 'disabled'
+          })
+        });
+      } catch (err) {
+        console.error('[Zoopay] stopsell sync error:', err);
+      }
+    }
   }
   user.markModified('collectionTools');
   await user.save();
@@ -1145,70 +1419,90 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
   }
 
   const typeNum = Number(ct_type || 16);
-  let upiSuffix = '@ybl';
-  let partnerName = 'PhonePe Business';
-  
-  if (typeNum === 16) {
-    upiSuffix = '@paytm';
-    partnerName = 'PayTM';
-  } else if (typeNum === 19) {
-    upiSuffix = '@ybl';
-    partnerName = 'PhonePe Business';
-  } else if (typeNum === 18) {
-    upiSuffix = '@apl';
-    partnerName = 'Amazon Pay';
-  } else {
-    upiSuffix = '@upi';
-    partnerName = 'UPI Partner';
-  }
+  const upiType = mapCtTypeToUpiType(typeNum);
+  const partnerName = mapCtTypeToName(typeNum);
 
-  const generatedUpi = `${account}${upiSuffix}`;
+  try {
+    // 1. Get or Register on Zoopay and obtain JWT token
+    const zoopayToken = await getOrRegisterZoopayUser(user);
 
-  let tool;
-  if (ct_id) {
-    tool = user.collectionTools.find(t => t.id === ct_id);
-  }
+    // 2. Call sendWalletOtp on Zoopay API
+    console.log(`[Zoopay] Sending Wallet OTP: account=${account}, upiType=${upiType}`);
+    const otpRes = await fetch('https://api.zoopay.vip/api/collection/tools/sendWalletOtp', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${zoopayToken}`
+      },
+      body: JSON.stringify({
+        upi_account: account,
+        upi_type: upiType
+      })
+    });
+    const otpJson = await otpRes.json();
+    console.log(`[Zoopay] sendWalletOtp response:`, JSON.stringify(otpJson));
 
-  if (!tool) {
-    const id = `tool-user-${Date.now()}`;
-    tool = {
-      id: id,
-      name: partnerName,
-      type: typeNum,
-      onlyPaymentFlag: 3,
-      state: 2, // idle / online
-      minSellToken: 2,
-      limitConfig: JSON.stringify({ min: 100, max: 100000 }),
-      inSell: 1,
-      ctGuide: "If you Change your upi id, please relink right now!",
-      account: account,
-      upi: generatedUpi,
-      phone: user.phone,
-      pnname: pnname || "Merchant Partner",
-      remark: "Verified partner"
-    };
-    user.collectionTools.push(tool);
-  } else {
-    tool.account = account;
-    tool.upi = generatedUpi;
-    tool.type = typeNum;
-    tool.state = 2;
-    tool.inSell = 1;
-    if (pnname) tool.pnname = pnname;
-  }
-
-  user.markModified('collectionTools');
-  await user.save();
-
-  return res.json({
-    code: 0,
-    msg: 'success',
-    data: {
-      needRelink: false,
-      ctId: tool.id,
-      ct_id: tool.id
+    if (!otpJson || otpJson.code !== 200) {
+      return res.json({ 
+        code: otpJson ? otpJson.code : 500, 
+        msg: otpJson ? (otpJson.message || 'Zoopay OTP Sending Failed') : 'Zoopay API error' 
+      });
     }
-  });
+
+    const sessionId = otpJson.data.sessionId;
+    user.zoopaySessionId = sessionId;
+    user.zoopayUpiType = upiType;
+    user.markModified('zoopaySessionId');
+    user.markModified('zoopayUpiType');
+
+    // Create or locate the tool
+    let tool;
+    const toolId = ct_id || `tool-user-${Date.now()}`;
+    tool = user.collectionTools.find(t => t.id === toolId);
+
+    if (!tool) {
+      tool = {
+        id: toolId,
+        name: partnerName,
+        type: typeNum,
+        onlyPaymentFlag: 3,
+        state: 7, // waiting for OTP / Auth UPI
+        minSellToken: 2,
+        limitConfig: JSON.stringify({ min: 100, max: 100000 }),
+        inSell: 1,
+        ctGuide: "If you Change your upi id, please relink right now!",
+        account: account,
+        upi: "Pending verification",
+        phone: user.phone,
+        pnname: pnname || "Merchant Partner",
+        remark: "Verified partner"
+      };
+      user.collectionTools.push(tool);
+    } else {
+      tool.account = account;
+      tool.type = typeNum;
+      tool.state = 7;
+      tool.inSell = 1;
+      if (pnname) tool.pnname = pnname;
+    }
+
+    user.markModified('collectionTools');
+    await user.save();
+
+    return res.json({
+      code: 0,
+      msg: 'success',
+      data: {
+        needRelink: false,
+        ctId: tool.id,
+        ct_id: tool.id
+      }
+    });
+  } catch (err) {
+    console.error('[Zoopay] monitorflow/one error:', err);
+    return res.json({ code: 500, msg: err.message || 'Internal Server Error' });
+  }
 });
 
 app.post('/xxapi/monitorflow/two', (req, res) => {
@@ -1223,8 +1517,77 @@ app.post('/xxapi/monitorflow/two/getpreloginresult2', (req, res) => {
   res.json({ code: 0, msg: 'success', data: {} });
 });
 
-app.post('/xxapi/monitorflow/three', (req, res) => {
-  res.json({ code: 0, msg: 'success', data: {} });
+app.post('/xxapi/monitorflow/three', async (req, res) => {
+  const user = await getUserByToken(req);
+  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+
+  const { pk, ct_type, account, login_params } = req.body;
+  let otp = '';
+  try {
+    if (login_params) {
+      const params = typeof login_params === 'string' ? JSON.parse(login_params) : login_params;
+      otp = params.otp;
+    }
+  } catch (e) {
+    console.error('[Zoopay] Error parsing login_params:', e);
+  }
+
+  if (!otp) {
+    return res.json({ code: 400, msg: 'OTP is required' });
+  }
+
+  try {
+    const zoopayToken = user.zoopayToken || await getOrRegisterZoopayUser(user);
+    const sessionId = user.zoopaySessionId;
+
+    if (!sessionId) {
+      return res.json({ code: 400, msg: 'Session expired, please request OTP again.' });
+    }
+
+    console.log(`[Zoopay] Verifying OTP: sessionId=${sessionId}, otp=${otp}`);
+    const verifyRes = await fetch('https://api.zoopay.vip/api/collection/tools/verifyWalletOtp', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${zoopayToken}`
+      },
+      body: JSON.stringify({
+        sessionId,
+        otp
+      })
+    });
+    const verifyJson = await verifyRes.json();
+    console.log(`[Zoopay] verifyWalletOtp response:`, JSON.stringify(verifyJson));
+
+    if (!verifyJson || verifyJson.code !== 200) {
+      return res.json({ 
+        code: verifyJson ? verifyJson.code : 400, 
+        msg: verifyJson ? (verifyJson.message || 'Incorrect OTP, please try again') : 'Incorrect OTP, please try again'
+      });
+    }
+
+    // Retrieve verified UPI IDs from Zoopay
+    const upis = (verifyJson.data && verifyJson.data.upis) || [];
+    user.zoopayUpis = upis;
+    user.markModified('zoopayUpis');
+
+    // Update tool state to ready
+    if (user.collectionTools) {
+      const tool = user.collectionTools.find(t => t.id === pk);
+      if (tool) {
+        tool.state = 2; // set to idle/ready to enable selection checking in check
+        tool.backup_upi = upis;
+      }
+      user.markModified('collectionTools');
+    }
+
+    await user.save();
+    return res.json({ code: 0, msg: 'success', data: { upis } });
+  } catch (err) {
+    console.error('[Zoopay] monitorflow/three error:', err);
+    return res.json({ code: 500, msg: err.message || 'Internal Server Error' });
+  }
 });
 
 app.post('/xxapi/monitorflow/three2', (req, res) => {
@@ -1235,12 +1598,37 @@ app.post('/xxapi/monitorflow/four', (req, res) => {
   res.json({ code: 0, msg: 'success', data: {} });
 });
 
-app.post('/xxapi/monitorflow/check', (req, res) => {
-  res.json({ code: 0, msg: 'success', data: { status: 'success' } });
+app.post('/xxapi/monitorflow/check', async (req, res) => {
+  const user = await getUserByToken(req);
+  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+
+  const { ct_type, account, ct_id } = req.body;
+  const upis = user.zoopayUpis || [];
+
+  return res.json({
+    code: 0,
+    msg: 'success',
+    data: {
+      state: 2, // constants.ct_state_idle
+      id: ct_id,
+      backup_upi: upis
+    }
+  });
 });
 
-app.post('/xxapi/monitorflow/upi/list', (req, res) => {
-  res.json({ code: 0, msg: 'success', data: [] });
+app.post('/xxapi/monitorflow/upi/list', async (req, res) => {
+  const user = await getUserByToken(req);
+  if (!user) return res.json({ code: 403, msg: 'Unauthorized' });
+  
+  const upis = user.zoopayUpis || [];
+  return res.json({
+    code: 0,
+    msg: 'success',
+    data: {
+      id: req.body.ct_id,
+      backup_upi: upis
+    }
+  });
 });
 
 // 10. RECHARGE, DEPOSIT AND TRANSACTION ENDPOINTS
@@ -1794,5 +2182,38 @@ if (process.env.NODE_ENV !== 'production' || (!process.env.VERCEL && !process.en
     console.log(`Server is running on http://0.0.0.0:${PORT}`);
   });
 }
+
+// Keep Zoopay collection tools enabled by calling updateState every 10 seconds
+setInterval(async () => {
+  try {
+    const users = await User.find({ 'collectionTools.zoopayToolId': { $exists: true } });
+    for (const user of users) {
+      if (!user.collectionTools || !user.zoopayToken) continue;
+      for (const tool of user.collectionTools) {
+        if (tool && tool.zoopayToolId) {
+          try {
+            console.log(`[Zoopay KeepAlive] Updating state for tool ${tool.zoopayToolId} of user ${user.phone}`);
+            await fetch('https://api.zoopay.vip/api/collection/tools/updateState', {
+              method: 'POST',
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${user.zoopayToken}`
+              },
+              body: JSON.stringify({
+                id: tool.zoopayToolId,
+                state: 'enabled'
+              })
+            });
+          } catch (err) {
+            console.error(`[Zoopay KeepAlive] Error updating tool ${tool.zoopayToolId}:`, err);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Zoopay KeepAlive] Error in keepalive interval:', err);
+  }
+}, 10000); // 10 seconds
 
 export default app;
