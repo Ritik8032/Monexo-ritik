@@ -141,6 +141,8 @@ function generateMd5Password(phone) {
 
 function mapCtTypeToUpiType(typeNum) {
   switch (typeNum) {
+    case 1: return "phonepe";
+    case 2: return "mobikwik";
     case 3: return "freecharge";
     case 4: return "bharatpe";
     case 6: return "airtel";
@@ -151,13 +153,14 @@ function mapCtTypeToUpiType(typeNum) {
     case 17: return "iob";
     case 18: return "amazon";
     case 19: return "phonepe"; // PhonePe Business
-    case 20: return "mobikwik";
     default: return "paytm"; // Default fallback
   }
 }
 
 function mapCtTypeToName(typeNum) {
   switch (typeNum) {
+    case 1: return "PhonePe";
+    case 2: return "MobiKwik";
     case 3: return "Freecharge";
     case 4: return "BharatPe";
     case 6: return "Airtel Pay";
@@ -168,7 +171,6 @@ function mapCtTypeToName(typeNum) {
     case 17: return "IOB";
     case 18: return "Amazon Pay";
     case 19: return "PhonePe Business";
-    case 20: return "MobiKwik";
     default: return "UPI Partner";
   }
 }
