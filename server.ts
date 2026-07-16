@@ -1279,7 +1279,14 @@ app.get('/xxapi/collectiontoollist', async (req, res) => {
   // Also filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
   const cleanTools = (user.collectionTools || []).filter(
     t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
-  );
+  ).map(t => {
+    const typeVal = t.type !== undefined ? t.type : 16;
+    return {
+      ...t,
+      ctType: t.ctType !== undefined ? t.ctType : typeVal,
+      ct_type: t.ct_type !== undefined ? t.ct_type : typeVal
+    };
+  });
   return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
 
@@ -1292,7 +1299,14 @@ app.get('/xxapi/collectiontool', async (req, res) => {
   // Filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
   const cleanTools = (user.collectionTools || []).filter(
     t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
-  );
+  ).map(t => {
+    const typeVal = t.type !== undefined ? t.type : 16;
+    return {
+      ...t,
+      ctType: t.ctType !== undefined ? t.ctType : typeVal,
+      ct_type: t.ct_type !== undefined ? t.ct_type : typeVal
+    };
+  });
   return res.json({ code: 0, msg: 'success', data: cleanTools[0] || null });
 });
 
@@ -1467,7 +1481,14 @@ app.get('/xxapi/availablect', async (req, res) => {
   // Filter out tools with state === 7 (waiting_authupi) as they are not fully verified/linked yet
   const cleanTools = (user.collectionTools || []).filter(
     t => t && t.id && !t.id.startsWith('tool-paytm-business') && !t.id.startsWith('tool-phonepe-business') && !t.id.startsWith('tool-amazon') && t.state !== 7
-  );
+  ).map(t => {
+    const typeVal = t.type !== undefined ? t.type : 16;
+    return {
+      ...t,
+      ctType: t.ctType !== undefined ? t.ctType : typeVal,
+      ct_type: t.ct_type !== undefined ? t.ct_type : typeVal
+    };
+  });
   return res.json({ code: 0, msg: 'success', data: cleanTools });
 });
 
@@ -1542,6 +1563,8 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
         id: toolId,
         name: partnerName,
         type: typeNum,
+        ctType: typeNum,
+        ct_type: typeNum,
         onlyPaymentFlag: 3,
         state: 7, // waiting for OTP / Auth UPI
         minSellToken: 2,
@@ -1558,6 +1581,8 @@ app.post('/xxapi/monitorflow/one', async (req, res) => {
     } else {
       tool.account = account;
       tool.type = typeNum;
+      tool.ctType = typeNum;
+      tool.ct_type = typeNum;
       tool.state = 7;
       tool.inSell = 1;
       if (pnname) tool.pnname = pnname;
